@@ -1,0 +1,214 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Radio</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;700&display=swap">
+<style>
+  :root {
+    --case: #2a2f24; --panel: #e6dfc8; --ink: #20241b; --led: #ffb000;
+    --screen: #14170f; --ptt: #c8431f; --ptt-on: #ef5a2c; --ok: #7fbf5a;
+    font-family: "Chakra Petch", system-ui, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; background: var(--case); color: var(--ink); }
+  body { display: flex; justify-content: center; padding: env(safe-area-inset-top) 0 env(safe-area-inset-bottom); }
+  main { width: 100%; max-width: 420px; display: flex; flex-direction: column; gap: 16px; padding: 16px; }
+  .screen { background: var(--screen); color: var(--led); border-radius: 10px; padding: 14px 16px; }
+  .screen h1 { margin: 0; font-size: 2.4rem; letter-spacing: .04em; font-weight: 700; }
+  .screen p { margin: 4px 0 0; font-size: .95rem; opacity: .8; }
+  .card { background: var(--panel); border-radius: 14px; padding: 16px; display: flex; flex-direction: column; gap: 12px; }
+  label { display: flex; flex-direction: column; gap: 6px; font-weight: 700; font-size: .9rem; }
+  input { font: inherit; font-weight: 500; padding: 12px; border: 2px solid var(--ink); border-radius: 8px; background: #f4efdc; color: var(--ink); }
+  button { font: inherit; font-weight: 700; border: 0; border-radius: 10px; cursor: pointer; }
+  .join { padding: 14px; background: var(--ink); color: var(--panel); font-size: 1.05rem; }
+  .join:focus-visible, input:focus-visible, .ptt:focus-visible { outline: 3px solid var(--led); outline-offset: 2px; }
+  #radio { display: none; flex: 1; flex-direction: column; gap: 16px; }
+  ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+  li { display: flex; align-items: center; gap: 10px; font-weight: 500; }
+  .dot { width: 12px; height: 12px; border-radius: 50%; background: #8a8a74; flex: none; }
+  li.talking .dot { background: var(--led); box-shadow: 0 0 10px var(--led); }
+  li.talking { font-weight: 700; }
+  .empty { opacity: .7; font-weight: 500; }
+  .ptt { flex: 1; min-height: 220px; background: var(--ptt); color: #fff; font-size: 1.6rem; border-radius: 22px;
+         touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none;
+         box-shadow: 0 8px 0 #7d2710; transition: transform .06s, box-shadow .06s; }
+  .ptt.on { background: var(--ptt-on); transform: translateY(6px); box-shadow: 0 2px 0 #7d2710; }
+  .hint { color: #b9b79f; font-size: .85rem; text-align: center; margin: 0; }
+  .err { color: #a3260b; font-weight: 700; margin: 0; min-height: 1.2em; }
+  @media (prefers-reduced-motion: reduce) { .ptt { transition: none; } }
+</style>
+</head>
+<body>
+<main>
+  <section class="screen">
+    <h1 id="ch">CANAL --</h1>
+    <p id="status">Sin conexión</p>
+  </section>
+
+  <section class="card" id="join">
+    <label>Tu nombre <input id="name" maxlength="24" autocomplete="nickname" placeholder="Ej: Sofi"></label>
+    <label>Canal (el mismo para todos tus amigos) <input id="room" maxlength="32" value="1" inputmode="text"></label>
+    <p class="err" id="err" role="alert"></p>
+    <button class="join" id="go">Conectarme</button>
+  </section>
+
+  <section id="radio">
+    <div class="card"><ul id="peers"></ul></div>
+    <button class="ptt" id="ptt">Mantén para hablar</button>
+    <p class="hint">También puedes mantener la barra espaciadora</p>
+  </section>
+</main>
+
+<script>
+const ICE = [{ urls: 'stun:stun.l.google.com:19302' }];
+// Para redes estrictas añade un servidor TURN aquí:
+// { urls: 'turn:tu-servidor:3478', username: '...', credential: '...' }
+
+const $ = (id) => document.getElementById(id);
+const peers = new Map();      // id -> { name, pc, audio, talking, queue }
+let ws, local, myId, talking = false;
+
+$('go').onclick = join;
+$('room').addEventListener('keydown', (e) => e.key === 'Enter' && join());
+
+async function join() {
+  const name = $('name').value.trim() || 'Anónimo';
+  const room = $('room').value.trim() || '1';
+  $('err').textContent = '';
+  try {
+    local = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
+    });
+  } catch {
+    $('err').textContent = 'Necesito permiso del micrófono (y la página debe abrirse con https).';
+    return;
+  }
+  local.getAudioTracks()[0].enabled = false;   // micrófono cerrado hasta pulsar
+
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  ws = new WebSocket(`${proto}://${location.host}/ws`);
+  ws.onopen = () => ws.send(JSON.stringify({ type: 'join', room, name }));
+  ws.onmessage = (e) => onMessage(JSON.parse(e.data));
+  ws.onclose = () => { $('status').textContent = 'Desconectado — recarga la página'; setTalking(false); };
+
+  $('ch').textContent = 'CANAL ' + room.toUpperCase();
+  $('join').style.display = 'none';
+  $('radio').style.display = 'flex';
+}
+
+const send = (m) => ws.readyState === 1 && ws.send(JSON.stringify(m));
+
+function onMessage(m) {
+  switch (m.type) {
+    case 'welcome':
+      myId = m.id;
+      m.peers.forEach((p) => connect(p.id, p.name, true));   // yo llamo a los que ya estaban
+      render();
+      break;
+    case 'peer-joined':
+      connect(m.id, m.name, false);                          // ellos me llamarán a mí
+      render();
+      break;
+    case 'peer-left':
+      drop(m.id);
+      render();
+      break;
+    case 'talking': {
+      const p = peers.get(m.from);
+      if (p) { p.talking = m.on; render(); }
+      break;
+    }
+    case 'offer': case 'answer': case 'ice': {
+      const p = peers.get(m.from);
+      if (p) p.queue = p.queue.then(() => handleSignal(p, m)).catch(console.error);
+      break;
+    }
+  }
+}
+
+function connect(id, name, initiator) {
+  const pc = new RTCPeerConnection({ iceServers: ICE });
+  const audio = new Audio();
+  audio.autoplay = true;
+  const p = { id, name, pc, audio, talking: false, queue: Promise.resolve() };
+  peers.set(id, p);
+
+  local.getTracks().forEach((t) => pc.addTrack(t, local));
+  pc.onicecandidate = (e) => e.candidate && send({ type: 'ice', to: id, candidate: e.candidate });
+  pc.ontrack = (e) => { audio.srcObject = e.streams[0]; audio.play().catch(() => {}); };
+  pc.onconnectionstatechange = () => {
+    $('status').textContent = [...peers.values()].some((x) => x.pc.connectionState === 'connected')
+      ? 'En el aire' : 'Esperando amigos…';
+  };
+
+  if (initiator) {
+    p.queue = pc.createOffer()
+      .then((offer) => pc.setLocalDescription(offer))
+      .then(() => send({ type: 'offer', to: id, sdp: pc.localDescription }));
+  }
+}
+
+async function handleSignal(p, m) {
+  const pc = p.pc;
+  if (m.type === 'offer') {
+    await pc.setRemoteDescription(m.sdp);
+    await pc.setLocalDescription(await pc.createAnswer());
+    send({ type: 'answer', to: p.id, sdp: pc.localDescription });
+  } else if (m.type === 'answer') {
+    await pc.setRemoteDescription(m.sdp);
+  } else if (m.type === 'ice') {
+    await pc.addIceCandidate(m.candidate);
+  }
+}
+
+function drop(id) {
+  const p = peers.get(id);
+  if (!p) return;
+  p.pc.close();
+  p.audio.srcObject = null;
+  peers.delete(id);
+}
+
+function render() {
+  const ul = $('peers');
+  ul.innerHTML = '';
+  if (!peers.size) {
+    ul.innerHTML = '<li class="empty">Nadie más en este canal todavía.</li>';
+    $('status').textContent = 'Esperando amigos…';
+    return;
+  }
+  peers.forEach((p) => {
+    const li = document.createElement('li');
+    if (p.talking) li.className = 'talking';
+    li.innerHTML = '<span class="dot"></span>';
+    li.append(p.name + (p.talking ? ' está hablando' : ''));
+    ul.append(li);
+  });
+}
+
+function setTalking(on) {
+  if (!local || talking === on) return;
+  talking = on;
+  local.getAudioTracks()[0].enabled = on;
+  $('ptt').classList.toggle('on', on);
+  $('ptt').textContent = on ? 'Hablando…' : 'Mantén para hablar';
+  send({ type: 'talking', on });
+}
+
+const ptt = $('ptt');
+ptt.addEventListener('pointerdown', (e) => { ptt.setPointerCapture(e.pointerId); setTalking(true); });
+['pointerup', 'pointercancel'].forEach((ev) => ptt.addEventListener(ev, () => setTalking(false)));
+ptt.addEventListener('contextmenu', (e) => e.preventDefault());
+
+addEventListener('keydown', (e) => {
+  if (e.code === 'Space' && !e.repeat && document.activeElement.tagName !== 'INPUT' && local) {
+    e.preventDefault(); setTalking(true);
+  }
+});
+addEventListener('keyup', (e) => { if (e.code === 'Space') setTalking(false); });
+addEventListener('blur', () => setTalking(false));
+</script>
+</body>
+  </html>
