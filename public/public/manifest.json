@@ -1,0 +1,11 @@
+{
+  "name": "Radio amigos",
+  "short_name": "Radio",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#2a2f24",
+  "theme_color": "#2a2f24",
+  "icons": [
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}
