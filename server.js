@@ -8,6 +8,7 @@ const PUBLIC = path.join(__dirname, 'public');
 const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css' };
 TYPES['.json'] = 'application/manifest+json'; TYPES['.svg'] = 'image/svg+xml';
 const server = http.createServer((req, res) => {
+  if (require('./icons')(req, res)) return;
   const url = req.url.split('?')[0];
   const file = path.join(PUBLIC, path.normalize(url === '/' ? '/index.html' : url));
   if (!file.startsWith(PUBLIC)) { res.writeHead(403); return res.end(); }
